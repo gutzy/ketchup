@@ -7,13 +7,7 @@ export async function loadAllDataSets() {
     const text = await res.text()
     const rows = text.replace(/\r/g, '').split('\n').map((it) => it.trim()).filter(Boolean)
     const headers = rows[0].split(',').map((it) => it.trim())
-    const data = []
-    for (let i = 1; i < rows.length; i++) {
-      const row = rows[i].split(',')
-      const obj = {}
-      for (let j = 0; j < headers.length; j++) obj[headers[j]] = row[j]
-      data.push(obj)
-    }
+    const data = parseComplexCSV(text)
     return data
   }
 
@@ -34,6 +28,7 @@ export async function loadAllDataSets() {
   }
   if (enumsMap['StandType']) enumsMap['StandType'] = enumsMap['StandType'].map((s) => s.toLowerCase())
 
+  console.log({itemBlueprintsRaw})
   const itemBlueprints = itemBlueprintsRaw
     .filter((it) => !!it.name)
     .filter((it) => it.done === 'TRUE')
@@ -71,4 +66,49 @@ export function pngUrlFor(modelAsset) {
   return `https://massgrave.me/splot2/models/PNG/${modelAsset}.png`
 }
 
+export function parseComplexCSV(csvText) {
+  if (!csvText) return [];
 
+  const lines = csvText.replace(/\r/g, '').split('\n').filter(l => l.trim().length > 0);
+  if (lines.length < 2) return [];
+
+  const parseCsvLine = (line) => {
+    const cells = [];
+    let cur = '';
+    let inQuotes = false;
+    for (let i = 0; i < line.length; i++) {
+      const ch = line[i];
+      if (ch === '"') {
+        if (inQuotes && line[i + 1] === '"') {
+          cur += '"';
+          i++;
+        } else {
+          inQuotes = !inQuotes;
+        }
+      } else if (ch === ',' && !inQuotes) {
+        cells.push(cur);
+        cur = '';
+      } else {
+        cur += ch;
+      }
+    }
+    cells.push(cur);
+    return cells;
+  };
+
+  const headers = parseCsvLine(lines[0]).map(h => h.trim());
+  const rows = [];
+
+  for (let li = 1; li < lines.length; li++) {
+    const cells = parseCsvLine(lines[li]);
+    if (cells.length === 1 && cells[0].trim() === '') continue;
+
+    const row = {};
+    for (let i = 0; i < headers.length; i++) {
+      row[headers[i]] = cells[i];
+    }
+    rows.push(row);
+  }
+
+  return rows;
+}

@@ -159,21 +159,32 @@ async function onAddBlueprint(item) {
     box.setPosition(0, null, 0)
     attachSelection(box)
     // track list entry
+    // Annotate with blueprint metadata for export by ID
+    box.meta = { id: item.id, name: item.name }
     items.value.push({ id: box.uniqueId, name: item.name, box })
   }
 }
 
+function toDegrees(rad) { return rad * 180 / Math.PI }
+function round(n, dec = 3) { const f = Math.pow(10, dec); return Math.round(n * f) / f }
+function getBlueprintIdForBox(box) {
+  if (box?.meta?.id != null) return box.meta.id
+  const bp = appData.value.itemBlueprints.find(b => b.name === box?.name)
+  return bp?.id
+}
+
 function onExportJson() {
-  const boxes = stage.objectManager.boxes
-  const models = boxes.map((b) => ({
-    uniqueId: b.uniqueId,
-    name: b.name,
-    x: b.position.x,
-    y: b.position.y,
-    z: b.position.z,
-    rotation: b.rotation.y,
-  }))
-  const json = JSON.stringify({ models }, null, 2)
+  // stable order by items panel
+  const list = items.value.map(it => it.box)
+  const i = list.map(b => getBlueprintIdForBox(b))
+  const p = list.map(b => [round(b.position.x), round(b.position.y), round(b.position.z)])
+  const r = list.map(b => [
+    round(toDegrees(b.rotation.x), 2),
+    round(toDegrees(b.rotation.y), 2),
+    round(toDegrees(b.rotation.z), 2),
+  ])
+  const payload = { v: 2, i, p, r }
+  const json = JSON.stringify(payload)
   const blob = new Blob([json], { type: 'application/json' })
   const a = document.createElement('a')
   a.href = URL.createObjectURL(blob)
@@ -190,20 +201,62 @@ async function onImportJson(text) {
       stage.objectManager.remove(it.box)
     }
     items.value = []
-    // add models back
-    if (Array.isArray(data.models)) {
+    // v2 compact format: { v:2, i:[ids], p:[[x,y,z]], r:[[rx,ry,rz]] }
+    if (data && data.v === 2 && Array.isArray(data.i)) {
+      for (let i = 0; i < data.i.length; i++) {
+        const id = data.i[i]
+        const pos = Array.isArray(data.p?.[i]) ? data.p[i] : [0, null, 0]
+        const rot = Array.isArray(data.r?.[i]) ? data.r[i] : [0,0,0]
+        const bp = appData.value.itemBlueprints.find(b => b.id === id)
+        const url = bp?.modelAsset ? glbUrlFor(bp.modelAsset) : null
+        if (!url) continue
+        const model = await stage.objectManager.loadGLTFModel(url, {}, { stackable: !!bp?.canBeStackedOn, snapsToSimilar: !!bp?.snapsToSimilar, customData: { name: bp?.name || String(id) } })
+        const box = stage.getByUniqueId(model.boxId)
+        if (!box) continue
+        box.meta = { id: bp?.id, name: bp?.name }
+        box.setPosition(pos[0] ?? 0, pos[1] ?? null, pos[2] ?? 0)
+        // rotations in degrees
+        box.rotation.x = (rot[0] ?? 0) * Math.PI / 180
+        box.setRotation(rot[1] ?? 0)
+        box.rotation.z = (rot[2] ?? 0) * Math.PI / 180
+        box.dispatchEvent({type:'change'})
+        items.value.push({ id: box.uniqueId, name: bp?.name || String(id), box })
+      }
+    }
+    // v1 compact format: { v:1, m:[names], p:[[x,y,z]], r:[[rx,ry,rz]] }
+    else if (data && data.v === 1 && Array.isArray(data.m)) {
+      for (let i = 0; i < data.m.length; i++) {
+        const name = data.m[i]
+        const pos = Array.isArray(data.p?.[i]) ? data.p[i] : [0, null, 0]
+        const rot = Array.isArray(data.r?.[i]) ? data.r[i] : [0,0,0]
+        const bp = appData.value.itemBlueprints.find(b => b.name === name)
+        const url = bp?.modelAsset ? glbUrlFor(bp.modelAsset) : null
+        if (!url) continue
+        const model = await stage.objectManager.loadGLTFModel(url, {}, { stackable: !!bp?.canBeStackedOn, snapsToSimilar: !!bp?.snapsToSimilar, customData: { name: name } })
+        const box = stage.getByUniqueId(model.boxId)
+        if (!box) continue
+        box.meta = { id: bp?.id, name: bp?.name }
+        box.setPosition(pos[0] ?? 0, pos[1] ?? null, pos[2] ?? 0)
+        // rotations in degrees
+        box.rotation.x = (rot[0] ?? 0) * Math.PI / 180
+        box.setRotation(rot[1] ?? 0)
+        box.rotation.z = (rot[2] ?? 0) * Math.PI / 180
+        box.dispatchEvent({type:'change'})
+        items.value.push({ id: box.uniqueId, name, box })
+      }
+    }
+    // legacy format fallback
+    else if (Array.isArray(data.models)) {
       for (const m of data.models) {
-        // find blueprint by name if possible to get modelAsset
         const bp = appData.value.itemBlueprints.find(b => b.name === m.name)
         const url = bp?.modelAsset ? glbUrlFor(bp.modelAsset) : null
         if (!url) continue
         const model = await stage.objectManager.loadGLTFModel(url, {}, { stackable: !!bp?.canBeStackedOn, snapsToSimilar: !!bp?.snapsToSimilar, customData: { name: bp?.name || m.name } })
         const box = stage.getByUniqueId(model.boxId)
-        if (box) {
-          box.setPosition(m.x ?? 0, m.y ?? null, m.z ?? 0)
-          if (typeof m.rotation === 'number') box.setRotation(m.rotation)
-          items.value.push({ id: box.uniqueId, name: bp?.name || m.name, box })
-        }
+        if (!box) continue
+        box.setPosition(m.x ?? 0, m.y ?? null, m.z ?? 0)
+        if (typeof m.rotation === 'number') box.setRotation(m.rotation)
+        items.value.push({ id: box.uniqueId, name: bp?.name || m.name, box })
       }
     }
   } catch (e) {
